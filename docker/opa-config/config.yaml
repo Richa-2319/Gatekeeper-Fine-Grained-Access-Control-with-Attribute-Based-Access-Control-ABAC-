@@ -1,0 +1,18 @@
+services:
+  authz:
+    url: http://localhost:8181
+
+plugins:
+  envoy_ext_authz_grpc:
+    addr: :9191
+    query: data.envoy.authz.allow
+
+decision_logs:
+  console: true
+
+status:
+  console: true
+
+server:
+  encoding:
+    gzip: true
