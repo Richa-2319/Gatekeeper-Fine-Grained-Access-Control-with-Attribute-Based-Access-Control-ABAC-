@@ -1,5 +1,3 @@
-
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -8,14 +6,13 @@ services:
       POSTGRES_DB: gatekeeper
       POSTGRES_USER: gatekeeper
       POSTGRES_PASSWORD: password
-      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gatekeeper -d gatekeeper"]
+      test: ["CMD-SHELL", "pg_isready -U gatekeeper"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,7 +22,6 @@ services:
   redis:
     image: redis:7-alpine
     container_name: gatekeeper-redis
-    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
     volumes:
@@ -44,11 +40,6 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: WARN
-    ports:
-      - "2181:2181"
-    volumes:
-      - zookeeper_data:/var/lib/zookeeper/data
     networks:
       - gatekeeper-network
 
@@ -56,27 +47,16 @@ services:
     image: confluentinc/cp-kafka:7.4.0
     container_name: gatekeeper-kafka
     depends_on:
-      zookeeper:
-        condition: service_started
+      - zookeeper
     ports:
       - "9092:9092"
-      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
-    volumes:
-      - kafka_data:/var/lib/kafka/data
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
     networks:
       - gatekeeper-network
 
@@ -85,44 +65,64 @@ services:
     container_name: gatekeeper-opa
     ports:
       - "8181:8181"
-    command:
-      - "run"
-      - "--server"
-      - "--addr=0.0.0.0:8181"
-      - "--config-file=/config/config.yaml"
-      - "/policies"
+    command: ["run", "--server", "--addr=0.0.0.0:8181"]
     volumes:
-      - ./docker/opa-config:/config
       - ./docker/opa-policies:/policies
-    depends_on:
-      - postgres
-      - redis
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8181/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
     networks:
       - gatekeeper-network
 
-  # Optional: Redis GUI for development
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: gatekeeper-redis-gui
-    environment:
-      REDIS_HOSTS: local:redis:6379
+  # Gatekeeper Application
+  gatekeeper-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gatekeeper-app
     ports:
-      - "8082:8081"
+      - "8080:8080"
+    environment:
+      # Database configuration
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/gatekeeper
+      SPRING_DATASOURCE_USERNAME: gatekeeper
+      SPRING_DATASOURCE_PASSWORD: password
+
+      # Redis configuration
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+
+      # Kafka configuration
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+
+      # OPA configuration
+      GATEKEEPER_OPA_URL: http://opa:8181
+      GATEKEEPER_OPA_ENABLED: "true"
+
+      # JWT configuration
+      GATEKEEPER_JWT_SECRET: myVerySecretKeyThatIsAtLeast256BitsLongForHS512Algorithm
+      GATEKEEPER_JWT_EXPIRATION: 86400000
+
+      # Spring profile
+      SPRING_PROFILES_ACTIVE: prod
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      opa:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - gatekeeper-network
 
 volumes:
   postgres_data:
   redis_data:
-  kafka_data:
-  zookeeper_data:
 
 networks:
   gatekeeper-network:
